@@ -23,7 +23,8 @@ import matplotlib
 import numpy as np
 import networkx as nx
 import dimod
-from dwave.system import LeapHybridCQMSampler
+from dwave.samplers import SimulatedAnnealingSampler
+
 try:
     import matplotlib.pyplot as plt
 except ImportError:
@@ -270,119 +271,63 @@ def build_cqm(stem_dict, min_stem, c):
     return cqm
 
 
-def process_cqm_solution(sample_set, verbose=True):
-    """ Processes samples from solution and prints relevant information.
-
-    Prints information about the best feasible solution and returns a list of stems contained in solution.
-    Returns solution as a list of stems rather than a binary string.
-
-    Args:
-        sample_set:
-            :class:`~dimod.SampleSet`: Sample set of formed by sampling the RNA folding optimization model.
-        verbose (bool):
-            Boolean indicating if function should print additional information.
-
-    Returns:
-        list: List of stems included in optimal solution, encoded as 4-tuples.
-    """
-
-    # Filter for feasibility.
-    feasible_samples = sample_set.filter(lambda s: s.is_feasible)
-    # Check that feasible example exists.
-    if not feasible_samples:
-        raise Exception("All solutions infeasible. You may need to try again.")
-
-    # Extract best feasible sample.
-    solution = feasible_samples.first
-
-    print('Best Energy:', solution.energy)
-
-    # Extract stems with a positive indicator variable.
-    bonded_stems = [stem for stem, val in solution.sample.items() if val == 1 and type(stem) == tuple]
-
-    print('\nNumber of stems in best solution:', len(bonded_stems))
-    print('Stems in best solution:', *bonded_stems)
-
+def process_bqm_solution(sample, verbose=True):
+    # Extract stems with positive indicator value (assuming variables are stored as tuples)
+    bonded_stems = [stem for stem, val in sample.items() if val == 1 and isinstance(stem, tuple)]
+    print('Stems in best solution:', bonded_stems)
     if verbose:
-        print('\nNumber of variables (stems):', len(solution[0].keys()))
-
-        # Find pseudoknots using product instead of combinations allows for short asymmetric checks.
-        pseudoknots = [(stem1, stem2) for [stem1, stem2] in product(bonded_stems, bonded_stems)
-                       if stem1[1] < stem2[0] and stem2[1] < stem1[2] and stem1[3] < stem2[2]]
-
-        print('\nNumber of pseudoknots in best solution:', len(pseudoknots))
-        if pseudoknots:
-            print('Pseudoknots:', *pseudoknots)
-
+        print('Number of variables (original):', len(sample))
     return bonded_stems
 
-
-# Create command line functionality.
-DEFAULT_PATH = join(dirname(__file__), 'RNA_text_files', 'TMGMV_UPD-PK1.txt')
-
-
-@click.command(help='Solve an instance of the RNA folding problem using '
-                    'LeapHybridCQMSampler.')
-@click.option('--path', type=click.Path(), default=DEFAULT_PATH,
-              help=f'Path to problem file.  Default is {DEFAULT_PATH!r}')
+@click.command(help='Solve RNA folding problem using a BQM solved by simulated annealing.')
+@click.option('--path', type=click.Path(), default='RNA_text_files/TMGMV_UPD-PK1.txt',
+              help='Path to the RNA text file.')
 @click.option('--verbose/--no-verbose', default=True,
-              help='Prints additional model information.')
+              help='Print additional model information.')
 @click.option('--min-stem', type=click.IntRange(1,), default=3,
-              help='Minimum length for a stem to be considered.')
+              help='Minimum length for a stem.')
 @click.option('--min-loop', type=click.IntRange(0,), default=2,
-              help='Minimum number of nucleotides separating two sides of a stem.')
+              help='Minimum nucleotides between two sides of a stem.')
 @click.option('-c', type=click.FloatRange(0,), default=0.3,
-              help='Multiplier for the coefficient of the quadratic terms for pseudoknots.')
-def main(path, verbose, min_stem, min_loop, c):
-    """ Find optimal stem configuration of an RNA sequence.
-
-    Reads file, creates constrained quadratic model, solves model, and creates a plot of the result.
-    Default parameters are set by click module inputs.
-
-    Args:
-        path (str):
-            Path to problem file with RNA sequence.
-        verbose (bool):
-            Boolean to determine amount of information printed.
-        min_stem (int):
-            Smallest number of consecutive bonds to be considered a stem.
-        min_loop (int):
-            Minimum number of nucleotides separating two sides of a stem.
-        c (float):
-            Multiplier for the coefficient of the quadratic terms for pseudoknots.
-
-    Returns:
-        None: None
-    """
+              help='Pseudoknot penalty multiplier.')
+def main_bqm_sa(path, verbose, min_stem, min_loop, c):
     if verbose:
         print('\nPreprocessing data from:', path)
-
+    
     matrix = text_to_matrix(path, min_loop)
     stem_dict = make_stem_dict(matrix, min_stem, min_loop)
-
-    if stem_dict:
-        cqm = build_cqm(stem_dict, min_stem, c)
-    else:
-        print('\nNo possible stems were found. You may need to check your parameters.')
+    
+    if not stem_dict:
+        print('\nNo possible stems found. Check your parameters.')
         return None
 
+    # Build the constrained quadratic model (CQM) as before
+    cqm = build_cqm(stem_dict, min_stem, c)
+    
     if verbose:
-        print('Connecting to Solver...')
-
-    sampler = LeapHybridCQMSampler()
-
+        print('CQM built. Now converting CQM to BQM...')
+    
+    # Convert CQM to BQM using a penalty (lagrange multiplier chosen empirically)
+    bqm, inverter = dimod.cqm_to_bqm(cqm, lagrange_multiplier=10)
+    
     if verbose:
-        print('Finding Solution...')
-
-    sample_set = sampler.sample_cqm(cqm)
-    sample_set.resolve()
-
+        print('BQM has been created. Solving with simulated annealing...')
+    
+    # Solve the unconstrained BQM using a simulated annealing sampler (neal)
+    sampler = SimulatedAnnealingSampler()
+    sampleset = sampler.sample(bqm, num_reads=100)
+    
+    # Convert the best sample back to the original variable space using the inverter
+    sample = inverter(sampleset.first.sample)
+    
     if verbose:
-        print('Processing solution...')
-
-    stems = process_cqm_solution(sample_set, verbose)
+        print('Best BQM sample (after inversion):', sample)
+    
+    # Process the sample to extract the stems in the solution
+    stems = process_bqm_solution(sample, verbose)
+    
+    # Plot the result (your original function for visualization)
     make_plot(path, stems)
 
-
 if __name__ == "__main__":
-    main()
+    main_bqm_sa()
