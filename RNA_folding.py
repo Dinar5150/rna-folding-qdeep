@@ -23,8 +23,6 @@ import matplotlib
 import numpy as np
 import networkx as nx
 import dimod
-# Removed SimulatedAnnealingSampler import since we now use QDeepHybridSolver
-# from dwave.samplers import SimulatedAnnealingSampler
 
 try:
     import matplotlib.pyplot as plt
@@ -32,7 +30,7 @@ except ImportError:
     matplotlib.use("agg")
     import matplotlib.pyplot as plt
 
-from qdeepsdk import QDeepHybridSolver  # New Python API import
+from qdeepsdk import QDeepHybridSolver
 
 
 def text_to_matrix(file_name, min_loop):
@@ -211,7 +209,6 @@ def main_bqm_sa(path, verbose, min_stem, min_loop, c):
     if verbose:
         print('BQM has been created. Now solving using QDeepHybridSolver...')
     
-    # --- Use QDeepHybridSolver instead of simulated annealing ---
     # Convert the BQM to a QUBO matrix with a fixed ordering.
     ordering = list(bqm.variables)
     n = len(ordering)
